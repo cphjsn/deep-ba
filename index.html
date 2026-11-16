@@ -1,15 +1,456 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TBA</title>
-<style>
-  html, body { height: 100%; margin: 0; }
-  body { display: flex; align-items: center; justify-content: center;
-         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-         font-size: 2rem; color: #222; background: #fff; }
-</style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DeepBA: Deep Bundle Adjustment</title>
+  <meta name="description" content="DeepBA amortizes bundle adjustment into a 2.04M-parameter graph neural network that refines camera poses, intrinsics and depth from 2D matches, starting from a trivial cold start.">
+  <!-- private preview: not indexed until the page is published -->
+  <meta name="robots" content="noindex">
+  <!-- TODO before publishing: og:image / twitter:card with an absolute URL of assets/figures/teaser.jpg -->
+  <meta property="og:title" content="DeepBA: Deep Bundle Adjustment">
+  <meta property="og:description" content="A learned bundle-adjustment loop on 2D matches, from a cold start.">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;700&family=Source+Serif+4:wght@700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bulma/0.9.4/css/bulma.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/jpswalsh/academicons@1/css/academicons.min.css">
+  <!-- ?v=N on the page's own CSS/JS: bump it (here, below and in static/js/gallery.js) after an
+       edit, so that browsers do not keep running a cached copy -->
+  <link rel="stylesheet" href="static/css/index.css?v=4">
+  <link rel="icon" href="static/favicon.svg" type="image/svg+xml">
 </head>
-<body>TBA</body>
+<body>
+
+<!-- ============================== TITLE ============================== -->
+<section class="hero">
+  <div class="hero-body">
+    <div class="container is-max-desktop has-text-centered">
+      <h1 class="title is-1 publication-title">Deep Bundle Adjustment</h1>
+      <!-- TODO: author homepages -->
+      <div class="is-size-5 publication-authors">
+        <span class="author-block"><a href="#">Pak Hong Chui</a><sup>1,2</sup></span>
+        <span class="author-block"><a href="#">Hector Andrade-Loarca</a><sup>1,2</sup></span>
+        <span class="author-block"><a href="https://cvg.cit.tum.de/members/cremers">Daniel Cremers</a><sup>1,2</sup></span>
+      </div>
+      <div class="is-size-6 publication-affiliations">
+        <span class="author-block"><sup>1</sup>Technical University of Munich</span>
+        <span class="author-block"><sup>2</sup>Munich Center for Machine Learning (MCML)</span>
+      </div>
+      <!-- TODO: venue once the paper is accepted -->
+      <div class="publication-venue">Under review</div>
+
+      <!-- TODO: code link -->
+      <div class="publication-links">
+        <a class="button is-rounded is-dark" href="https://arxiv.org/pdf/2611.18256"><span class="icon"><i class="fas fa-file-pdf"></i></span><span>Paper</span></a>
+        <a class="button is-rounded is-dark" href="https://arxiv.org/abs/2611.18256"><span class="icon"><i class="ai ai-arxiv"></i></span><span>arXiv</span></a>
+        <a class="button is-rounded is-dark is-disabled" href="#" title="Code release coming soon" aria-disabled="true"><span class="icon"><i class="fab fa-github"></i></span><span>Code (coming soon)</span></a>
+        <a class="button is-rounded is-dark" href="#bibtex"><span class="icon"><i class="fas fa-quote-right"></i></span><span>BibTeX</span></a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== TEASER ============================== -->
+<section class="section teaser">
+  <div class="container is-max-widescreen">
+    <div class="teaser-caption">
+      <p class="no-priors">
+        <span><i class="fas fa-xmark"></i> pose initialization</span>
+        <span><i class="fas fa-xmark"></i> known intrinsics</span>
+        <span><i class="fas fa-xmark"></i> point tracks</span>
+      </p>
+    </div>
+    <!-- the blue box of the paper's Fig. 1 as one band (scripts/make_update_box.py) -->
+    <figure class="update-step">
+      <img src="assets/figures/update_step.png" alt="The difference. Classical BA: Δs_k = −(JᵀJ)⁻¹Jᵀr(s_k),
+        analytic solve, needs a good init; s: cameras + 3D points from tracks. DeepBA (ours): Δs_k = GNN_θ(s_k, G),
+        learned, weight-shared, trivial init; s: poses + focal + depth, no tracks.">
+    </figure>
+    <div class="teaser-caption">
+      <p class="caption-lead"><strong>Matches only, no images or depth prior: from identity cameras and unit depths, 100 iterations of one 2.04M-parameter network.</strong></p>
+      <p><span class="key-est">Orange</span>: estimated cameras, <span class="key-gt">green</span>: ground-truth cameras</p>
+      <p>Above each clip: six input views with some of their 2D matches, and below them DeepBA's current depth (bright = near).</p>
+    </div>
+    <div class="teaser-grid" id="teaserGrid"><!-- filled by static/js/gallery.js --></div>
+  </div>
+</section>
+
+<!-- ============================== ABSTRACT ============================== -->
+<section class="section">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered">Abstract</h2>
+    <div class="content has-text-justified">
+      <p>
+        We present <b>DeepBA</b> (<b>Deep</b> <b>B</b>undle <b>A</b>djustment), a graph neural network (GNN)
+        that recovers camera poses, intrinsics, and scene structure from 2D matches across an arbitrary
+        number of views. Rather than solving a non-linear least-squares problem per scene, DeepBA
+        amortizes bundle adjustment into a learned graph network that iteratively refines its estimate
+        from geometric residuals. Where classical SfM computes its updates analytically and needs careful
+        initialization, DeepBA learns them and converges from a cold start. It is trained with
+        scale-invariant supervision (ground-truth rotation, translation direction, and intrinsics, plus
+        reprojection self-consistency), so datasets with arbitrary metric units can be mixed without
+        per-scene normalization. DeepBA is decoupled from the matcher. At 2.04M parameters, it outperforms
+        prior learned SfM from matches on scene reconstruction and on most pose metrics, is competitive with
+        classical SfM at moderate accuracy thresholds and overtakes it in wall time as the view count
+        grows, and approaches monolithic image-to-geometry transformers such as VGGT (~1.2B parameters)
+        with greater modularity.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== METHOD ============================== -->
+<section class="section" id="method">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered">Method</h2>
+    <figure class="figure">
+      <img src="assets/figures/method.jpg?v=2" alt="DeepBA architecture" loading="lazy">
+      <figcaption>
+        Left: one refinement iteration. The scene state and the view graph are encoded into camera, pair
+        and match features, re-initialized every iteration, mixed by L message-passing blocks and decoded
+        into an update of the state. The block is weight-shared across the K iterations. Right: one block, with
+        its three message-passing steps.
+      </figcaption>
+    </figure>
+  </div>
+
+  <div class="container is-max-widescreen ideas">
+    <div class="idea-card">
+      <h3 class="title is-5">Key idea 1: A lightweight GNN for learned updates that mimic classical bundle adjustment</h3>
+      <p>
+        Each iteration reads the current state and predicts the next update of poses, focal lengths
+        and depth. The same small network runs for every iteration and every scene. With 2.04M parameters,
+        it is about 590&times; smaller than VGGT (~1.2B).
+      </p>
+    </div>
+    <div class="idea-card">
+      <h3 class="title is-5">Key idea 2: A track-free state</h3>
+      <p>
+        Following the track-free idea of <a href="https://cphjsn.github.io/tfd-sfm/">TFD-SfM</a>, the state is one pose, one focal length and
+        one depth map per image. Pairwise matches are enough, so no tracks have to be built, and any matcher
+        can be plugged in.
+      </p>
+    </div>
+    <div class="idea-card">
+      <h3 class="title is-5">Key idea 3: Scale-invariant supervision</h3>
+      <p>
+        Rotations, translation directions and intrinsics are supervised, plus reprojection self-consistency.
+        Datasets with arbitrary metric units are mixed without per-scene normalization.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== GALLERY ============================== -->
+<section class="section gallery" id="gallery">
+  <div class="container is-max-widescreen">
+    <h2 class="title is-3 has-text-centered">Reconstructions from a cold start</h2>
+    <p class="gallery-intro">
+      DeepBA on the eLoFTR matches of every scene, replayed in 3D: drag to orbit, scroll to zoom, and
+      scrub the slider through the iterations. Each frame is centered and scaled to fit, since the scene
+      grows from unit depth, and 20k of the matches are shown, lifted by DeepBA's depth. The numbers are
+      the run's relative rotation and translation accuracy at 5&deg; and its pose AUC at 30&deg;, without
+      a final bundle adjustment.
+    </p>
+    <div class="tabs is-centered is-toggle is-small dataset-tabs" id="datasetTabs"><ul></ul></div>
+    <p class="dataset-note" id="datasetNote"></p>
+    <div class="player-wrap">
+      <div class="viewer-wrap">
+        <canvas id="viewerCanvas"></canvas>
+        <div class="viewer-status" id="viewerStatus" hidden>Loading…</div>
+        <!-- the scene's last frame until it is clicked: the replay (a few MB) loads on demand -->
+        <button class="viewer-placeholder" id="viewerPlaceholder" type="button">
+          <img id="viewerPoster" alt="">
+          <span class="play-3d"><i class="fas fa-play"></i>&nbsp; Play in 3D</span>
+        </button>
+      </div>
+      <div class="viewer-controls is-idle">
+        <button class="button is-small is-dark" id="viewerPlay">Pause</button>
+        <input type="range" id="viewerSlider" min="0" max="49" step="0.01" value="0" aria-label="Iteration">
+        <span class="viewer-iteration" id="viewerIteration">iteration 0</span>
+        <button class="button is-small is-dark" id="viewerReset" title="Reset the view"><i class="fas fa-rotate-left"></i></button>
+      </div>
+      <p class="viewer-metrics" id="viewerMetrics"></p>
+    </div>
+    <p class="scene-caption" id="sceneCaption"></p>
+    <div class="thumbs" id="sceneThumbs" role="group" aria-label="Scene selector"></div>
+    <noscript><p>Enable JavaScript to browse the scenes.</p></noscript>
+  </div>
+</section>
+
+<!-- ============================== RESULTS ============================== -->
+<section class="section" id="results">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered">Results</h2>
+    <p class="table-caption">
+      Multi-view pose accuracy: relative rotation and translation accuracy at 10&deg; (RRA, RTA). The paper
+      also reports 3&deg; and 5&deg;. <b>Bold</b>: best, <u>underlined</u>: second best within each group.
+      Grey: image-to-geometry methods, for reference. &dagger;: ground-truth intrinsics and a final
+      classical bundle adjustment. &Dagger;: DeepBA's eLoFTR correspondences.
+    </p>
+    <div class="table-container">
+      <table class="table is-narrow is-hoverable results-table">
+        <colgroup></colgroup><colgroup span="2"></colgroup><colgroup span="2"></colgroup><colgroup span="2"></colgroup><colgroup span="2"></colgroup>
+        <thead>
+          <tr><th rowspan="2">Method</th><th colspan="2">DTU</th><th colspan="2">Mip-NeRF 360</th><th colspan="2">ETH3D</th><th colspan="2">IMC2021</th></tr>
+          <tr><th>RRA</th><th>RTA</th><th>RRA</th><th>RTA</th><th>RRA</th><th>RTA</th><th>RRA</th><th>RTA</th></tr>
+        </thead>
+        <tbody>
+          <!-- rows from scripts/paper_table.py (sections/experiments.tex, tab:aggregated_results_all_horizontal) -->
+          <tr class="group"><td colspan="9">Classical SfM</td></tr>
+          <tr><th>COLMAP (SIFT)</th><td>87.3</td><td>82.6</td><td class="best">100.0</td><td class="best">100.0</td><td class="best">96.7</td><td class="best">96.4</td><td>95.7</td><td>89.3</td></tr>
+          <tr><th>GLOMAP (SIFT)</th><td>87.2</td><td>78.6</td><td class="best">100.0</td><td class="best">100.0</td><td class="second">96.6</td><td class="second">91.5</td><td>96.0</td><td>88.2</td></tr>
+          <tr><th>COLMAP (eLoFTR)<sup>&Dagger;</sup></th><td class="best">100.0</td><td class="best">99.5</td><td class="best">100.0</td><td class="best">100.0</td><td>76.9</td><td>75.5</td><td class="second">97.2</td><td class="best">91.5</td></tr>
+          <tr><th>GLOMAP (eLoFTR)<sup>&Dagger;</sup></th><td class="second">97.9</td><td class="second">96.8</td><td class="best">100.0</td><td class="best">100.0</td><td>61.6</td><td>56.9</td><td class="best">97.8</td><td class="second">91.2</td></tr>
+          <tr class="group"><td colspan="9">Learned image-to-geometry</td></tr>
+          <tr class="grey"><th>MASt3R-SfM</th><td class="best">100.0</td><td class="second">99.5</td><td class="second">86.9</td><td class="second">84.0</td><td class="second">79.0</td><td class="second">74.6</td><td class="second">97.5</td><td class="second">87.7</td></tr>
+          <tr class="grey"><th>VGGT</th><td class="best">100.0</td><td class="best">100.0</td><td class="best">100.0</td><td class="best">98.5</td><td class="best">96.9</td><td class="best">79.6</td><td class="best">100.0</td><td class="best">91.9</td></tr>
+          <tr class="group"><td colspan="9">Learning-based SfM from matches</td></tr>
+          <tr><th>RESfM (SIFT)<sup>&dagger;</sup></th><td>22.0</td><td>26.0</td><td>12.0</td><td>12.1</td><td>4.5</td><td>3.8</td><td>84.6</td><td>81.2</td></tr>
+          <tr><th>GASfM (SIFT)<sup>&dagger;</sup></th><td class="second">40.8</td><td class="second">44.1</td><td>41.1</td><td>44.3</td><td>12.1</td><td>10.7</td><td>86.3</td><td>75.3</td></tr>
+          <tr><th>RESfM (eLoFTR)<sup>&dagger;, &Dagger;</sup></th><td>36.8</td><td>39.3</td><td>11.3</td><td>12.0</td><td>19.6</td><td>19.4</td><td>84.8</td><td>79.8</td></tr>
+          <tr><th>GASfM (eLoFTR)<sup>&dagger;, &Dagger;</sup></th><td>38.8</td><td>42.4</td><td class="second">54.7</td><td class="second">57.6</td><td class="second">27.2</td><td class="second">29.4</td><td class="second">92.2</td><td class="best">90.8</td></tr>
+          <tr class="ours"><th>DeepBA</th><td class="best">100.0</td><td class="best">99.6</td><td class="best">73.5</td><td class="best">86.5</td><td class="best">69.1</td><td class="best">49.1</td><td class="best">99.0</td><td class="second">87.3</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="table-caption">
+      Camera pose on CO3Dv2 and RealEstate10K, 10 frames per scene. Time: seconds per scene on one H100, as matching +
+      solver for the methods that take matches.
+    </p>
+    <div class="table-container">
+      <table class="table is-narrow is-hoverable results-table">
+        <colgroup></colgroup><colgroup span="3"></colgroup><colgroup></colgroup><colgroup span="2"></colgroup>
+        <thead>
+          <tr><th rowspan="2">Method</th><th colspan="3">CO3Dv2</th><th>RealEstate10K</th><th rowspan="2">Params</th><th rowspan="2">Time</th></tr>
+          <tr><th>RRA@15</th><th>RTA@15</th><th>AUC@30</th><th>AUC@30</th></tr>
+        </thead>
+        <tbody>
+          <!-- rows from scripts/paper_table.py (sections/experiments.tex, tab:pose) -->
+          <tr class="group"><td colspan="7">Classical SfM</td></tr>
+          <tr><th>COLMAP (SIFT)</th><td>86.3</td><td class="second">79.9</td><td class="second">74.9</td><td>46.5</td><td>&ndash;</td><td>~2+3 s</td></tr>
+          <tr><th>GLOMAP (SIFT)</th><td class="second">86.6</td><td>76.2</td><td>71.1</td><td>71.7</td><td>&ndash;</td><td>~2+2 s</td></tr>
+          <tr><th>COLMAP (eLoFTR)<sup>&Dagger;</sup></th><td class="best">89.7</td><td class="best">83.5</td><td class="best">77.0</td><td class="best">80.9</td><td>&ndash;</td><td>~7+11 s</td></tr>
+          <tr><th>GLOMAP (eLoFTR)<sup>&Dagger;</sup></th><td>82.1</td><td>72.3</td><td>67.6</td><td class="second">72.7</td><td>&ndash;</td><td>~7+5 s</td></tr>
+          <tr class="group"><td colspan="7">Learned image-to-geometry</td></tr>
+          <tr class="grey"><th>PoseDiffusion</th><td>87.7</td><td>80.0</td><td>71.6</td><td>39.6</td><td>39.0M</td><td>~115 s</td></tr>
+          <tr class="grey"><th>DUSt3R</th><td>98.3</td><td>82.1</td><td>72.9</td><td>79.9</td><td>577.8M</td><td>~7 s</td></tr>
+          <tr class="grey"><th>MASt3R</th><td class="second">99.2</td><td class="best">92.1</td><td class="second">84.7</td><td class="best">91.1</td><td>695.3M</td><td>~9 s</td></tr>
+          <tr class="grey"><th>VGGSfM</th><td>94.3</td><td class="second">85.8</td><td>80.5</td><td class="second">89.5</td><td>281.2M</td><td>~10 s</td></tr>
+          <tr class="grey"><th>VGGT</th><td class="best">99.3</td><td class="best">92.1</td><td class="best">85.1</td><td>85.3</td><td>~1.2B</td><td>~0.2 s</td></tr>
+          <tr class="group"><td colspan="7">Learning-based SfM from matches</td></tr>
+          <tr><th>RESfM (SIFT)<sup>&dagger;</sup></th><td>62.7</td><td>55.5</td><td>51.1</td><td>48.9</td><td>0.7M</td><td>~2+13 s</td></tr>
+          <tr><th>GASfM (SIFT)<sup>&dagger;</sup></th><td>79.1</td><td>73.9</td><td>68.6</td><td>75.4</td><td>145.2M</td><td>~2+0.5 s</td></tr>
+          <tr><th>RESfM (eLoFTR)<sup>&dagger;, &Dagger;</sup></th><td>61.1</td><td>54.0</td><td>48.2</td><td>63.7</td><td>0.7M</td><td>~7+13 s</td></tr>
+          <tr><th>GASfM (eLoFTR)<sup>&dagger;, &Dagger;</sup></th><td class="second">79.9</td><td class="second">77.3</td><td class="second">71.2</td><td class="second">82.8</td><td>145.2M</td><td>~7+2 s</td></tr>
+          <tr class="ours"><th>DeepBA</th><td class="best">97.4</td><td class="best">89.2</td><td class="best">78.6</td><td class="best">84.0</td><td>2.04M</td><td>~7+3 s</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <figure class="figure">
+      <div class="qual-grid">
+        <div></div>
+        <div class="qual-cols"><span>COLMAP</span><span>RESfM</span><span>GASfM</span><span>DeepBA</span></div>
+        <div class="qual-rows"><span>DTU (49)</span><span>Mip-NeRF 360 (194)</span><span>ETH3D (44)</span><span>IMC2021 (25)</span></div>
+        <img src="assets/figures/qualitative.jpg?v=4" alt="Qualitative comparison: COLMAP, RESfM, GASfM and DeepBA on DTU, Mip-NeRF 360, ETH3D and IMC2021" loading="lazy">
+      </div>
+      <figcaption>
+        Qualitative comparison. Rows: DTU <code>scan82</code>, Mip-NeRF 360 <code>bicycle</code>, ETH3D
+        <code>delivery_area</code> and IMC2021 <code>london_bridge</code> (a 25-view bag). The number after each
+        dataset is that scene's image count. 3D points, estimated cameras in
+        <span class="key-gt">green</span> and ground-truth cameras in <span class="qual-grey">grey</span>.
+      </figcaption>
+    </figure>
+
+    <figure class="figure">
+      <img class="fig-narrow" src="assets/figures/runtime.png?v=3" alt="Runtime against the number of images" loading="lazy">
+      <figcaption>
+        Left: time after matching on the first N images of Mip-NeRF 360 <code>bonsai</code>, with every method
+        using the same eLoFTR matches on one H100 (matching time dashed). Right: time per iteration against the number of matches.
+      </figcaption>
+    </figure>
+
+    <figure class="figure">
+      <img src="assets/figures/accuracy_vs_iteration.png?v=2" alt="Pose accuracy against the refinement iteration" loading="lazy">
+      <figcaption>
+        Pose accuracy against the refinement iteration (RRA@10&deg; left, RTA@10&deg; right) on Mip-NeRF 360.
+        Light curves: single scenes. Solid black: the mean, dotted: the mean without <code>room</code>.
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<!-- ============================== LOCALIZATION ============================== -->
+<section class="section" id="localization">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered">Localization: DeepBA vs PnP and HLoc</h2>
+    <div class="content has-text-justified">
+      <p>
+        DeepBA localizes a new image with the same refinement step it uses for reconstruction. The map stays
+        frozen, and only the query camera and its depth are refined, so DeepBA needs neither PnP nor the query's
+        intrinsics.
+      </p>
+    </div>
+
+    <h3 class="title is-5 loc-sub">One query camera, iteration by iteration</h3>
+    <div class="loc-grid">
+      <div class="teaser-cell">
+        <video data-play-on-screen muted loop playsinline preload="metadata"
+               poster="assets/media/loc/loc_single_hydrant_q10.jpg?v=2" src="assets/media/loc/loc_single_hydrant_q10.mp4?v=2"
+               aria-label="CO3Dv2 hydrant, query frame 10: one camera localized on a frozen DeepBA map"></video>
+        <div class="label">CO3Dv2 <code>hydrant</code>, query frame 10</div>
+      </div>
+      <div class="teaser-cell">
+        <video data-play-on-screen muted loop playsinline preload="metadata"
+               poster="assets/media/loc/loc_single_hydrant_q42.jpg?v=2" src="assets/media/loc/loc_single_hydrant_q42.mp4?v=2"
+               aria-label="CO3Dv2 hydrant, query frame 42: one camera localized on a frozen DeepBA map"></video>
+        <div class="label">CO3Dv2 <code>hydrant</code>, query frame 42</div>
+      </div>
+    </div>
+    <p class="table-caption">
+      One held-out image registered against the frozen 25-image DeepBA map (blue cameras and points). The query
+      camera (green) starts at the mean pose of the map cameras (their chordal-mean rotation and mean centre), the
+      same start for every query, with no PnP estimate. DeepBA's update moves it, together with its lifted 3D points,
+      onto the map. After 10 iterations the rotation error is 3.5&deg; (frame 10, from 109&deg;) and 4.0&deg;
+      (frame 42, from 19.1&deg;). Grey: the ground-truth camera.
+    </p>
+
+    <h3 class="title is-5 loc-sub">Same map, same queries: DeepBA vs PnP and HLoc</h3>
+    <div class="content has-text-justified">
+      <p>
+        Four localizers register the same held-out queries against the same frozen DeepBA map, so only the
+        registration step differs.
+      </p>
+    </div>
+    <div class="loc-grid">
+      <div class="teaser-cell">
+        <video data-play-on-screen muted loop playsinline preload="metadata"
+               poster="assets/media/loc/loc_compare_hydrant.jpg" src="assets/media/loc/loc_compare_hydrant.mp4"
+               aria-label="CO3Dv2 hydrant: query trajectories of four localizers on a frozen DeepBA map"></video>
+        <div class="label">CO3Dv2 <code>hydrant</code> (object-centric orbit)</div>
+      </div>
+      <div class="teaser-cell">
+        <video data-play-on-screen muted loop playsinline preload="metadata"
+               poster="assets/media/loc/loc_compare_scannet.jpg?v=2" src="assets/media/loc/loc_compare_scannet.mp4?v=2"
+               aria-label="ScanNet scene0042_00: query trajectories of four localizers on a frozen DeepBA map"></video>
+        <div class="label">ScanNet <code>scene0042_00</code> (indoor)</div>
+      </div>
+      <div class="teaser-cell">
+        <video data-play-on-screen muted loop playsinline preload="metadata"
+               poster="assets/media/loc/loc_compare_toytruck.jpg?v=2" src="assets/media/loc/loc_compare_toytruck.mp4?v=2"
+               aria-label="CO3Dv2 toytruck: query trajectories of four localizers on a frozen DeepBA map"></video>
+        <div class="label">CO3Dv2 <code>toytruck</code></div>
+      </div>
+      <div class="teaser-cell">
+        <video data-play-on-screen muted loop playsinline preload="metadata"
+               poster="assets/media/loc/loc_compare_scannet0000.jpg?v=2" src="assets/media/loc/loc_compare_scannet0000.mp4?v=2"
+               aria-label="ScanNet scene0000_00: query trajectories of four localizers on a frozen DeepBA map"></video>
+        <div class="label">ScanNet <code>scene0000_00</code></div>
+      </div>
+      <div class="teaser-cell">
+        <video data-play-on-screen muted loop playsinline preload="metadata"
+               poster="assets/media/loc/loc_compare_motorcycle.jpg?v=2" src="assets/media/loc/loc_compare_motorcycle.mp4?v=2"
+               aria-label="CO3Dv2 motorcycle: query trajectories of four localizers on a frozen DeepBA map"></video>
+        <div class="label">CO3Dv2 <code>motorcycle</code></div>
+      </div>
+      <div class="teaser-cell">
+        <video data-play-on-screen muted loop playsinline preload="metadata"
+               poster="assets/media/loc/loc_compare_scannet0011.jpg" src="assets/media/loc/loc_compare_scannet0011.mp4"
+               aria-label="ScanNet scene0011_00: query trajectories of four localizers on a frozen DeepBA map"></video>
+        <div class="label">ScanNet <code>scene0011_00</code></div>
+      </div>
+    </div>
+    <p class="table-caption">
+      A 25-image DeepBA map, frozen, and 100 query frames registered one by one. Query-camera trajectories
+      against the ground truth (grey): DeepBA (green), PnP+RANSAC (orange) and HLoc (cyan), both given the
+      ground-truth query intrinsics, and the focal-solving PnPf+RANSAC (pink). The table gives the final median
+      camera-centre error (ground-truth units, metres on ScanNet; HLoc localizes the 75 queries outside the map)
+      and the map's own error (ATE) for all eight scenes we ran. The first two clips are the scenes of the paper.
+      The other four are the two best DeepBA maps per dataset (lowest map ATE) besides those.
+      <b>Bold</b>: best, <u>underline</u>: second best per scene (among the four localizers).
+    </p>
+    <div class="table-container">
+      <table class="table is-narrow is-hoverable results-table loc-table">
+        <colgroup></colgroup><colgroup></colgroup><colgroup span="4"></colgroup>
+        <thead>
+          <tr><th>Scene</th><th>Map ATE</th><th>PnP+RANSAC + GT <b>K</b></th><th>PnPf+RANSAC</th><th>HLoc + GT <b>K</b></th><th>DeepBA</th></tr>
+        </thead>
+        <tbody>
+          <tr><th>CO3Dv2 <code>hydrant</code></th><td>0.216</td><td>0.342</td><td><u>0.254</u></td><td>0.582</td><td><b>0.185</b></td></tr>
+          <tr><th>CO3Dv2 <code>toytruck</code></th><td>0.126</td><td><b>0.127</b></td><td>0.184</td><td>0.222</td><td><u>0.167</u></td></tr>
+          <tr><th>CO3Dv2 <code>motorcycle</code></th><td>0.204</td><td><u>0.254</u></td><td>0.264</td><td>0.373</td><td><b>0.240</b></td></tr>
+          <tr><th>CO3Dv2 <code>teddybear</code><sup>*</sup></th><td>7.969</td><td>7.509</td><td>7.619</td><td>7.674</td><td>7.628</td></tr>
+          <tr><th>ScanNet <code>scene0042_00</code></th><td>0.064</td><td><b>0.055</b></td><td>0.066</td><td>0.075</td><td><u>0.059</u></td></tr>
+          <tr><th>ScanNet <code>scene0000_00</code></th><td>0.046</td><td><b>0.047</b></td><td>0.090</td><td>0.058</td><td><u>0.053</u></td></tr>
+          <tr><th>ScanNet <code>scene0050_00</code></th><td>0.201</td><td><b>0.174</b></td><td>0.208</td><td><u>0.189</u></td><td>0.199</td></tr>
+          <tr><th>ScanNet <code>scene0011_00</code></th><td>0.086</td><td><b>0.057</b></td><td>0.083</td><td>0.085</td><td><u>0.061</u></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="table-caption">
+      <sup>*</sup>DeepBA's 25-image <code>teddybear</code> map fails (half of the orbit is flipped, map ATE 7.97),
+      so every localizer registered against it fails too.
+    </p>
+
+    <p class="table-caption">
+      Camera localization on 7-Scenes: median translation and rotation error (cm/&deg;) under the protocol of
+      HLoc. The first row is HLoc as published, with its own map from the full ~4,000-image TrainSplit. The
+      other four register the same queries against the same frozen DeepBA map, built from 200 TrainSplit
+      images. <b>Bold</b>/<u>underlined</u>: best/second best among these four, per column. The ground-truth
+      rotations are projected onto SO(3) before scoring, since they are not exactly orthonormal.
+    </p>
+    <div class="table-container">
+      <table class="table is-narrow is-hoverable results-table loc-table">
+        <colgroup></colgroup><colgroup></colgroup><colgroup span="7"></colgroup>
+        <thead>
+          <tr><th>Method</th><th>Intrinsics needed</th><th>Chess</th><th>Fire</th><th>Heads</th><th>Office</th><th>Pumpkin</th><th>Kitchen</th><th>Stairs</th></tr>
+        </thead>
+        <tbody>
+          <!-- sections/appendix.tex, tab:localization_7scenes -->
+          <tr class="grey"><th>HLoc, ~4,000-image map</th><td>yes</td><td>2/0.79</td><td>2/0.87</td><td>2/0.92</td><td>3/0.91</td><td>5/1.12</td><td>4/1.25</td><td>6/1.62</td></tr>
+          <tr class="group"><td colspan="9">Same map, same queries: only the registration step differs</td></tr>
+          <tr><th>HLoc, DeepBA map</th><td>yes</td><td>11/<u>1.88</u></td><td>10/<u>1.89</u></td><td>6/<u>1.90</u></td><td><u>9</u>/<u>4.75</u></td><td>16/3.85</td><td>10/4.37</td><td><u>37</u>/17.86</td></tr>
+          <tr><th>PnP+RANSAC + GT <b>K</b></th><td>yes</td><td>12/1.91</td><td>11/<b>1.67</b></td><td>6/2.04</td><td>10/<b>4.68</b></td><td>15/<b>3.71</b></td><td>10/<u>4.21</u></td><td><u>37</u>/<u>17.39</u></td></tr>
+          <tr><th>PnPf+RANSAC</th><td>no</td><td><u>6</u>/<b>1.66</b></td><td><u>5</u>/<b>1.67</b></td><td><u>3</u>/2.01</td><td>11/4.84</td><td><u>10</u>/<u>3.75</u></td><td><u>9</u>/<b>3.96</b></td><td>50/<b>17.35</b></td></tr>
+          <tr class="ours"><th>DeepBA</th><td>no</td><td><b>3</b>/<b>1.66</b></td><td><b>3</b>/<b>1.67</b></td><td><b>2</b>/<b>1.66</b></td><td><b>8</b>/4.80</td><td><b>8</b>/3.86</td><td><b>6</b>/4.30</td><td><b>30</b>/18.30</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ============================== BIBTEX ============================== -->
+<section class="section" id="bibtex">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3">BibTeX</h2>
+    <!-- TODO: replace with the proceedings entry once the paper is published -->
+    <pre><code>@article{chui2026deepba,
+  title   = {Deep Bundle Adjustment},
+  author  = {Chui, Pak Hong and Andrade-Loarca, Hector and Cremers, Daniel},
+  journal = {arXiv preprint arXiv:2611.18256},
+  year    = {2026},
+  eprint  = {2611.18256},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CV}
+}</code></pre>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="container is-max-desktop has-text-centered">
+    <p>Technical University of Munich &middot; Munich Center for Machine Learning</p>
+  </div>
+</footer>
+
+<script src="data/scenes.js?v=2"></script>
+<script type="importmap">
+  {"imports": {"three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+               "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+<script type="module" src="static/js/gallery.js?v=4"></script>
+</body>
 </html>
